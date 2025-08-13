@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import socket
 import select
+import os
+import hashlib
 
 HOST = '0.0.0.0'
 PORT = 5000
@@ -9,16 +11,31 @@ EXPECTED_AUVS = 2  # 幾台 AUV 註冊後才發送私鑰
 
 def send(sock, msg):
     sock.sendall(msg + "\n")
-
 def broadcast_msk():
+    """當湊齊數量後，生成每台 AUV 的 MSK 與 CRP 並發送"""
+    # 先產生每台 AUV 的 challenge 與 response
+    crp_dict = {}
+    for auv_id in REGISTERED.keys():
+        challenge = os.urandom(16)  # 隨機 16 bytes
+        response = hashlib.sha256(challenge).digest()[:16]  # 用 hash 模擬 PUF
+        crp_dict[auv_id] = (challenge, response)
+        # 存成檔案
+        with open("crp_{}.txt".format(auv_id), "wb") as f:
+            f.write(challenge+ "|" + response )
+
+    # 計算系統主私鑰 MSK_s = R(V1) XOR R(V2) XOR ...
+    all_responses = [r for (c, r) in crp_dict.values()]
+    msk_s = all_responses[0]
+    for r in all_responses[1:]:
+        msk_s = "".join([chr(ord(a) ^ ord(b)) for a, b in zip(msk_s, r)])
+
+    # 每台 AUV 的私鑰 MSK_Vi = MSK_s XOR R(Vi)
     for auv_id, sock in REGISTERED.items():
-        fname_msk = "msk_{}.txt".format(auv_id)
-        fname_crp = "crp_{}.txt".format(auv_id)
-        # 這裡簡化：直接用固定長度字串模擬
-        with open(fname_msk, "wb") as f:
-            f.write("K" * 16)  # 假設 16 bytes MSK
-        with open(fname_crp, "wb") as f:
-            f.write("C" * 16 + "|" + "R" * 16)  # challenge|response
+        Rvi = crp_dict[auv_id][1]
+        msk_vi = "".join([chr(ord(a) ^ ord(b)) for a, b in zip(msk_s, Rvi)])
+        # 存成檔案
+        with open("msk_{}.txt".format(auv_id), "wb") as f:
+            f.write(msk_vi)
         send(sock, "MSK_READY {}".format(auv_id))
 
 def main():
